@@ -7,37 +7,36 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
-  # — تنظیمات قابل تغییر —
-  REGION: us-central1                 # ریجن کلاستر GKE
-  CLUSTER: autopilot-cluster-1        # نام کلاستر
-  NAMESPACE: default                  # نِیم‌اسپیس دیپلوی
-  IMAGE_NAME: nginx                   # نام ایمیج در Docker Hub (مثلاً nginx یا nginx-demo)
+  REGION: us-central1
+  CLUSTER: autopilot-cluster-1
+  NAMESPACE: default
+  IMAGE_NAME: nginx
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
   PROJECT_ID: ${{ secrets.GOOGLE_PROJECT }}
-  IMAGE_TAG: ${{ github.sha }}        # کنار latest برای رولا‌بک راحت
-  MANIFEST: resources.yaml            # مسیر فایل مانيفست شما
+  IMAGE_TAG: ${{ github.sha }}
+  MANIFEST: resources.yaml
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: code checkout
         uses: actions/checkout@v4
 
-      # 1) Login به Docker Hub
+      # Build & Push → Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 2) Build & Push به Docker Hub (با کش)
-      - name: Set up Buildx
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build & Push image (Docker Hub)
+      - name: build and push the docker image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -48,44 +47,41 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 3) نصب gcloud و احراز هویت با کلید JSON سرویس‌اکانت
-      - name: Setup gcloud (service account key)
+      # Auth → GCP (با JSON موجود در Secret)
+      - name: Auth to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ secrets.GOOGLE_PROJECT }}
+          credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+
+      # نصب gcloud و پلاگین GKE
+      - name: Setup gcloud and GKE auth plugin
         uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: ${{ env.PROJECT_ID }}
-          service_account_key: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
           install_components: gke-gcloud-auth-plugin
-          export_default_credentials: true
 
-      # 4) گرفتن کرِدِنشال‌های کلاستر GKE
+      # گرفتن kubeconfig کلاستر
       - name: Get GKE credentials
         uses: google-github-actions/get-gke-credentials@v2
         with:
-          project_id: ${{ env.PROJECT_ID }}
+          project_id: ${{ secrets.GOOGLE_PROJECT }}
           cluster_name: ${{ env.CLUSTER }}
           location: ${{ env.REGION }}
 
-      # 5) رندر مانيفست با ایمیج Docker Hub و تگ SHA
+      # جایگذاری ایمیج Docker Hub داخل مانيفست
       - name: Render manifests
         run: |
+          command -v envsubst >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y gettext-base; }
           export IMAGE="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-          if [ ! -f "${MANIFEST}" ]; then
-            echo "❗ ${MANIFEST} not found. Please add your Kubernetes manifests (image: \${IMAGE})"
-            exit 1
-          fi
-          # رندر فایل با envsubst (به‌جای sed)
+          [ -f "${MANIFEST}" ] || { echo "❗ ${MANIFEST} not found"; exit 1; }
           envsubst < "${MANIFEST}" > out.yaml
-          echo "Using image: $IMAGE"
+          echo "Using image: ${IMAGE}"
 
-      # 6) Apply و بررسی rollout
-      - name: Apply & verify rollout
+      # Apply و بررسی رول‌اوت
+      - name: deploy to gke
         run: |
-          set -euo pipefail
           kubectl apply -n "${NAMESPACE}" -f out.yaml
-          # اگر نام Deployment متفاوت است، این خط را مطابق نام خودت عوض کن
           if kubectl get deploy nginx -n "${NAMESPACE}" >/dev/null 2>&1; then
             kubectl rollout status deploy/nginx -n "${NAMESPACE}" --timeout=180s
-          else
-            echo "⚠️ Deployment 'nginx' not found for rollout check. Skipping."
           fi
           kubectl get svc -n "${NAMESPACE}" -o wide
