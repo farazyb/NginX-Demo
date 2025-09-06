@@ -11,7 +11,7 @@ permissions:
 
 env:
   AWS_REGION: eu-north-1
-  CLUSTER: YOUR_EKS_CLUSTER_NAME   # <-- replace with your EKS cluster name
+  CLUSTER: amazing-synth-shark   # <-- replace with your EKS cluster name
   NAMESPACE: default
   IMAGE_NAME: nginx
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
