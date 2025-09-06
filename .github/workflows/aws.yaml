@@ -65,8 +65,11 @@ jobs:
       # Kubeconfig for EKS
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
-          kubectl config current-context
+          aws eks update-kubeconfig \
+             --name "${EKS_CLUSTER_NAME}" \
+             --region "${AWS_REGION}" \
+             --role-arn arn:aws:iam::644701780664:role/GitHubActionsEKSRole
+
       - name: Debug AWS identity
         run: aws sts get-caller-identity
 
