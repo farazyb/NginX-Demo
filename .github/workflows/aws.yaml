@@ -54,12 +54,14 @@ jobs:
           role-session-name: GitHub_to_AWS_via_FederatedOIDC
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install kubectl (EKS)
+      - name: Install kubectl
         run: |
-          curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.29.0/2024-04-19/bin/linux/amd64/kubectl
+          KUBECTL_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
+          curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
           kubectl version --client
+
 
 
       - name: Update kubeconfig
