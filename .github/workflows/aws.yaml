@@ -67,11 +67,15 @@ jobs:
       # Build a fresh kubeconfig (do NOT pass --role-arn; we already assumed it)
       - name: Update kubeconfig
         run: |
-          rm -rf ~/.kube && mkdir -p ~/.kube
-          aws eks update-kubeconfig \
-            --name "${EKS_CLUSTER_NAME}" \
-            --region "${AWS_REGION_EKS}"
-          kubectl config current-context
+            rm -rf ~/.kube && mkdir -p ~/.kube
+            aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION_EKS}"
+            kubectl config current-context
+
+      - name: Quick auth checks
+        run: |
+            aws sts get-caller-identity
+            kubectl auth can-i --list || true
+
 
       # (Optional) Quick identity checks while stabilizing
       - name: Who am I (AWS)?
