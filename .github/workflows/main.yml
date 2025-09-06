@@ -1,87 +1,87 @@
-name: Deploy Nginx
+# name: Deploy Nginx
 
-on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch: {}
+# on:
+#   push:
+#     branches: [ "main" ]
+#   workflow_dispatch: {}
 
-permissions:
-  contents: read
-  id-token: write
+# permissions:
+#   contents: read
+#   id-token: write
 
-env:
-  REGION: us-central1
-  CLUSTER: autopilot-cluster-1
-  NAMESPACE: default
-  IMAGE_NAME: nginx
-  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-  PROJECT_ID: ${{ secrets.GOOGLE_PROJECT }}
-  IMAGE_TAG: ${{ github.sha }}
-  MANIFEST: resources.yaml
+# env:
+#   REGION: us-central1
+#   CLUSTER: autopilot-cluster-1
+#   NAMESPACE: default
+#   IMAGE_NAME: nginx
+#   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+#   PROJECT_ID: ${{ secrets.GOOGLE_PROJECT }}
+#   IMAGE_TAG: ${{ github.sha }}
+#   MANIFEST: resources.yaml
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: code checkout
-        uses: actions/checkout@v4
+# jobs:
+#   deploy:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: code checkout
+#         uses: actions/checkout@v4
 
-      # Build & Push → Docker Hub
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+#       # Build & Push → Docker Hub
+#       - name: Login to Docker Hub
+#         uses: docker/login-action@v3
+#         with:
+#           username: ${{ secrets.DOCKERHUB_USERNAME }}
+#           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+#       - name: Set up Docker Buildx
+#         uses: docker/setup-buildx-action@v3
 
-      - name: build and push the docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            docker.io/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:latest
-            docker.io/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+#       - name: build and push the docker image
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           push: true
+#           tags: |
+#             docker.io/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:latest
+#             docker.io/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
 
-      # Auth → GCP (با JSON موجود در Secret)
-      - name: Auth to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          project_id: ${{ secrets.GOOGLE_PROJECT }}
-          credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+#       # Auth → GCP (با JSON موجود در Secret)
+#       - name: Auth to Google Cloud
+#         uses: google-github-actions/auth@v2
+#         with:
+#           project_id: ${{ secrets.GOOGLE_PROJECT }}
+#           credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
 
-      # نصب gcloud و پلاگین GKE
-      - name: Setup gcloud and GKE auth plugin
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          install_components: gke-gcloud-auth-plugin
+#       # نصب gcloud و پلاگین GKE
+#       - name: Setup gcloud and GKE auth plugin
+#         uses: google-github-actions/setup-gcloud@v2
+#         with:
+#           install_components: gke-gcloud-auth-plugin
 
-      # گرفتن kubeconfig کلاستر
-      - name: Get GKE credentials
-        uses: google-github-actions/get-gke-credentials@v2
-        with:
-          project_id: ${{ secrets.GOOGLE_PROJECT }}
-          cluster_name: ${{ env.CLUSTER }}
-          location: ${{ env.REGION }}
+#       # گرفتن kubeconfig کلاستر
+#       - name: Get GKE credentials
+#         uses: google-github-actions/get-gke-credentials@v2
+#         with:
+#           project_id: ${{ secrets.GOOGLE_PROJECT }}
+#           cluster_name: ${{ env.CLUSTER }}
+#           location: ${{ env.REGION }}
 
-      # جایگذاری ایمیج Docker Hub داخل مانيفست
-      - name: Render manifests
-        run: |
-          command -v envsubst >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y gettext-base; }
-          export IMAGE="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-          [ -f "${MANIFEST}" ] || { echo "❗ ${MANIFEST} not found"; exit 1; }
-          envsubst < "${MANIFEST}" > out.yaml
-          echo "Using image: ${IMAGE}"
+#       # جایگذاری ایمیج Docker Hub داخل مانيفست
+#       - name: Render manifests
+#         run: |
+#           command -v envsubst >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y gettext-base; }
+#           export IMAGE="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+#           [ -f "${MANIFEST}" ] || { echo "❗ ${MANIFEST} not found"; exit 1; }
+#           envsubst < "${MANIFEST}" > out.yaml
+#           echo "Using image: ${IMAGE}"
 
-      # Apply و بررسی رول‌اوت
-      - name: deploy to gke
-        run: |
-          kubectl apply -n "${NAMESPACE}" -f out.yaml
-          if kubectl get deploy nginx -n "${NAMESPACE}" >/dev/null 2>&1; then
-            kubectl rollout status deploy/nginx -n "${NAMESPACE}" --timeout=180s
-          fi
-          kubectl get svc -n "${NAMESPACE}" -o wide
+#       # Apply و بررسی رول‌اوت
+#       - name: deploy to gke
+#         run: |
+#           kubectl apply -n "${NAMESPACE}" -f out.yaml
+#           if kubectl get deploy nginx -n "${NAMESPACE}" >/dev/null 2>&1; then
+#             kubectl rollout status deploy/nginx -n "${NAMESPACE}" --timeout=180s
+#           fi
+#           kubectl get svc -n "${NAMESPACE}" -o wide

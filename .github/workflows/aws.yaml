@@ -1,34 +1,80 @@
-# This is a basic workflow to help you get started with Actions
-# name:Connect to an AWS role from a GitHub repository
+name: Deploy Nginx (AWS EKS)
 
-# Controls when the action will run. Invokes the workflow on push events but only for the main branch
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
 
 env:
-  
-  AWS_REGION : eu-north-1 #Change to reflect your Region
+  AWS_REGION: eu-north-1
+  CLUSTER: amazing-synth-shark          # e.g., eks-autopilot-equivalent
+  NAMESPACE: default
+  IMAGE_NAME: nginx
+  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+  IMAGE_TAG: ${{ github.sha }}
+  MANIFEST: resources.yaml
 
-# Permission can be added at job level or workflow level    
-permissions:
-      id-token: write   # This is required for requesting the JWT
-      contents: read    # This is required for actions/checkout
 jobs:
-  AssumeRoleAndCallIdentity:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Git clone the repository
-        uses: actions/checkout@v3
-      - name: configure aws credentials
-        uses: aws-actions/configure-aws-credentials@v1.7.0
+      - name: code checkout
+        uses: actions/checkout@v4
+
+      # Build & Push → Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: build and push the docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            docker.io/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:latest
+            docker.io/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Auth → AWS via OIDC + assume role
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::644701780664:role/GitHubActionsEKSRole
           role-session-name: GitHub_to_AWS_via_FederatedOIDC
           aws-region: ${{ env.AWS_REGION }}
-      # Hello from AWS: WhoAmI
-      - name: Sts GetCallerIdentity
+
+      # Get kubeconfig for EKS (installs kubectl too)
+      - name: Login to Amazon EKS
+        uses: aws-actions/amazon-eks-login@v2
+        with:
+          cluster-name: ${{ env.CLUSTER }}
+          region: ${{ env.AWS_REGION }}
+
+      # Render manifests (inject Docker Hub image tag)
+      - name: Render manifests
         run: |
-          aws sts get-caller-identity
+          command -v envsubst >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y gettext-base; }
+          export IMAGE="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+          [ -f "${MANIFEST}" ] || { echo "❗ ${MANIFEST} not found"; exit 1; }
+          envsubst < "${MANIFEST}" > out.yaml
+          echo "Using image: ${IMAGE}"
+
+      # Apply and check rollout
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -n "${NAMESPACE}" -f out.yaml
+          if kubectl get deploy nginx -n "${NAMESPACE}" >/dev/null 2>&1; then
+            kubectl rollout status deploy/nginx -n "${NAMESPACE}" --timeout=180s
+          fi
+          kubectl get svc -n "${NAMESPACE}" -o wide
