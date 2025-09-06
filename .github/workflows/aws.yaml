@@ -1,4 +1,4 @@
-name: Deploy Nginx (AWS EKS)
+name: Deploy (Docker Hub → AWS EKS)
 
 on:
   push:
@@ -7,25 +7,25 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write   # required for GitHub→AWS OIDC
 
 env:
   AWS_REGION: eu-north-1
-  CLUSTER: amazing-synth-shark   # <-- replace with your EKS cluster name
+  EKS_CLUSTER_NAME: amazing-synth-shark         # <--- your EKS cluster
   NAMESPACE: default
-  IMAGE_NAME: nginx
-  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-  IMAGE_TAG: ${{ github.sha }}
   MANIFEST: resources.yaml
+  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+  IMAGE_NAME: nginx
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: code checkout
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Build & Push → Docker Hub
+      # Build & push → Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -35,7 +35,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push the docker image
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -46,43 +46,46 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Configure AWS credentials via OIDC role assumption
+      # Assume AWS role via OIDC (no static keys)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::644701780664:role/GitHubActionsEKSRole
-          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          role-to-assume: arn:aws:iam::644701780664:role/GitHubActionsEKSRole   # <--- your role ARN
+          role-session-name: GitHub_to_AWS_via_OIDC
           aws-region: ${{ env.AWS_REGION }}
 
+      # Install kubectl (stable)
       - name: Install kubectl
         run: |
           KUBECTL_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
           curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
           kubectl version --client
 
-
-
+      # Kubeconfig for EKS
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --name "${CLUSTER}" --region "${AWS_REGION}"
+          aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
           kubectl config current-context
 
-      # Render manifests (inject Docker Hub image tag)
-      - name: Render manifests
+      # Render manifest (your resources.yaml uses ${IMAGE})
+      - name: Render manifest
         run: |
           command -v envsubst >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y gettext-base; }
           export IMAGE="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
           [ -f "${MANIFEST}" ] || { echo "❗ ${MANIFEST} not found"; exit 1; }
           envsubst < "${MANIFEST}" > out.yaml
           echo "Using image: ${IMAGE}"
+          sed -n '1,120p' out.yaml
 
-      # Apply and check rollout
+      # Create namespace if missing (safe to re-run)
+      - name: Ensure namespace
+        run: |
+          kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+      # Apply and wait for rollout
       - name: Deploy to EKS
         run: |
           kubectl apply -n "${NAMESPACE}" -f out.yaml
-          if kubectl get deploy nginx -n "${NAMESPACE}" >/dev/null 2>&1; then
-            kubectl rollout status deploy/nginx -n "${NAMESPACE}" --timeout=180s
-          fi
+          kubectl rollout status deploy/nginx -n "${NAMESPACE}" --timeout=180s
           kubectl get svc -n "${NAMESPACE}" -o wide
