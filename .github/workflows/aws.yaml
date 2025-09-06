@@ -1,4 +1,4 @@
-name: Deploy (Docker Hub → AWS EKS)
+name: Deploy (ECR Public → AWS EKS)
 
 on:
   push:
@@ -6,55 +6,57 @@ on:
   workflow_dispatch: {}
 
 permissions:
+  id-token: write     # required for GitHub→AWS OIDC
   contents: read
-  id-token: write   # required for GitHub→AWS OIDC
 
 env:
-  AWS_REGION: eu-north-1
+  # --- EKS/cluster settings ---
+  AWS_REGION_EKS: eu-north-1
   EKS_CLUSTER_NAME: amazing-synth-shark
   NAMESPACE: default
   MANIFEST: resources.yaml
-  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-  IMAGE_NAME: nginx
+
+  # --- ECR Public settings ---
+  # ECR Public control plane is in us-east-1
+  ECR_PUBLIC_REGION: us-east-1
+  ECR_PUBLIC_REPO: public.ecr.aws/y3l1h6z1/nginx
+
+  # Image/version
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Build & push → Docker Hub
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            docker.io/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:latest
-            docker.io/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # OIDC → assume role (no static keys)
-      - name: Configure AWS credentials
+      # OIDC → assume your IAM role (no static keys)
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::644701780664:role/GitHubActionsEKSRole
           role-session-name: GitHub_to_AWS_via_OIDC
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION_EKS }}
 
-      # kubectl (stable)
+      # Login to ECR Public (global endpoint; region must be us-east-1)
+      - name: Login to Amazon ECR Public
+        run: |
+          aws ecr-public get-login-password --region "${ECR_PUBLIC_REGION}" \
+            | docker login --username AWS --password-stdin public.ecr.aws
+
+      # Build & push image to ECR Public
+      - name: Build and push image
+        env:
+          IMAGE_URI: ${{ env.ECR_PUBLIC_REPO }}:${{ env.IMAGE_TAG }}
+        run: |
+          docker build -t "${IMAGE_URI}" .
+          docker push "${IMAGE_URI}"
+          echo "IMAGE=${IMAGE_URI}" >> "$GITHUB_ENV"
+          echo "Pushed ${IMAGE_URI}"
+
+      # Install kubectl (stable)
       - name: Install kubectl
         run: |
           KUBECTL_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
@@ -62,34 +64,39 @@ jobs:
           chmod +x kubectl && sudo mv kubectl /usr/local/bin/
           kubectl version --client
 
-      # kubeconfig for EKS (do NOT pass --role-arn; we already assumed it)
+      # Build a fresh kubeconfig (do NOT pass --role-arn; we already assumed it)
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
+          rm -rf ~/.kube && mkdir -p ~/.kube
+          aws eks update-kubeconfig \
+            --name "${EKS_CLUSTER_NAME}" \
+            --region "${AWS_REGION_EKS}"
           kubectl config current-context
 
-      # (Optional) quick identity checks while stabilizing
+      # (Optional) Quick identity checks while stabilizing
       - name: Who am I (AWS)?
         run: aws sts get-caller-identity
       - name: Who am I (K8s)?
         run: kubectl auth can-i --list || true
 
-      # Render manifest (${IMAGE} in your resources.yaml)
+      # Render manifest (your resources.yaml uses ${IMAGE})
       - name: Render manifest
         run: |
           command -v envsubst >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y gettext-base; }
-          export IMAGE="docker.io/${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
           envsubst < "${MANIFEST}" > out.yaml
-          echo "Using image: ${IMAGE}"
+          echo "Rendered with IMAGE=${IMAGE}"
+          sed -n '1,200p' out.yaml
 
-      # Ensure namespace exists (idempotent)
+      # Ensure namespace exists (idempotent; skip schema validation)
       - name: Ensure namespace
         run: |
-          kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - --validate=false
+          kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml \
+          | kubectl apply -f - --validate=false
 
-      # Deploy and wait for rollout
+      # Apply and wait for rollout (skip schema validation while testing)
       - name: Deploy to EKS
         run: |
           kubectl apply -n "${NAMESPACE}" -f out.yaml --validate=false
           kubectl rollout status deploy/nginx -n "${NAMESPACE}" --timeout=180s
+          kubectl get pods -n "${NAMESPACE}"
           kubectl get svc -n "${NAMESPACE}" -o wide
