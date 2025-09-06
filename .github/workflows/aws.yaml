@@ -11,7 +11,7 @@ permissions:
 
 env:
   AWS_REGION: eu-north-1
-  CLUSTER: amazing-synth-shark          # e.g., eks-autopilot-equivalent
+  CLUSTER: YOUR_EKS_CLUSTER_NAME   # <-- replace with your EKS cluster name
   NAMESPACE: default
   IMAGE_NAME: nginx
   DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -35,7 +35,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: build and push the docker image
+      - name: Build and push the docker image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -46,7 +46,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Auth → AWS via OIDC + assume role
+      # Configure AWS credentials via OIDC role assumption
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -54,12 +54,12 @@ jobs:
           role-session-name: GitHub_to_AWS_via_FederatedOIDC
           aws-region: ${{ env.AWS_REGION }}
 
-      # Get kubeconfig for EKS (installs kubectl too)
-      - name: Login to Amazon EKS
-        uses: aws-actions/amazon-eks-login@v2
-        with:
-          cluster-name: ${{ env.CLUSTER }}
-          region: ${{ env.AWS_REGION }}
+      # Get kubeconfig for EKS
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name "${CLUSTER}" \
+            --region "${AWS_REGION}"
 
       # Render manifests (inject Docker Hub image tag)
       - name: Render manifests
