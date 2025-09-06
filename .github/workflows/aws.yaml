@@ -67,6 +67,12 @@ jobs:
         run: |
           aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
           kubectl config current-context
+      - name: Debug AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Debug Kubernetes auth
+        run: kubectl auth can-i --list || true
+      
 
       # Render manifest (your resources.yaml uses ${IMAGE})
       - name: Render manifest
